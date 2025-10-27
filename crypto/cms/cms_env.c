@@ -146,6 +146,19 @@ int ossl_cms_env_asn1_ctrl(CMS_RecipientInfo *ri, int cmd)
     else if (EVP_PKEY_is_a(pkey, "RSA"))
         return ossl_cms_rsa_envelope(ri, cmd);
 
+    /*
+     * Check for GOST R 34.10-2012 keys to use kexp15 KDF
+     * This check is done by NID since GOST keys may come from an engine
+     * and EVP_PKEY_is_a() may not work reliably for them.
+     */
+    {
+        int pkey_nid = EVP_PKEY_get_id(pkey);
+        if (pkey_nid == NID_id_GostR3410_2012_256 ||
+            pkey_nid == NID_id_GostR3410_2012_512) {
+            return ossl_cms_gost_envelope(ri, cmd);
+        }
+    }
+
     /* Something else? We'll give engines etc a chance to handle this */
     if (pkey->ameth == NULL || pkey->ameth->pkey_ctrl == NULL)
         return 1;
