@@ -107,7 +107,9 @@ static int gost_cms_encrypt(CMS_RecipientInfo *ri)
     {
         ASN1_STRING *param_seq = NULL;
         unsigned char *param_der = NULL;
+        unsigned char *seq_der = NULL;
         int param_der_len;
+        int seq_der_len;
 
         /* Create ASN1_OBJECT for the agreement algorithm */
         param_obj = OBJ_nid2obj(param_oid);
@@ -124,28 +126,63 @@ static int gost_cms_encrypt(CMS_RecipientInfo *ri)
             return 0;
         }
 
-        /* Create ASN1_STRING as SEQUENCE to wrap the encoded OID */
+        /*
+         * Manually construct DER SEQUENCE containing the OID.
+         * DER format: tag | length | content
+         *
+         * We need: SEQUENCE { OID }
+         * Which is: 0x30 (SEQUENCE tag) | length | (OID DER bytes)
+         *
+         * The param_der already contains complete DER-encoded OID,
+         * so we just wrap it in SEQUENCE tag and length.
+         */
+        if (param_der_len >= 128) {
+            /* For simplicity, handle only short form length (< 128 bytes) */
+            ASN1_OBJECT_free(param_obj);
+            OPENSSL_free(param_der);
+            ERR_raise(ERR_LIB_CMS, ERR_R_INTERNAL_ERROR);
+            return 0;
+        }
+
+        seq_der_len = 2 + param_der_len; /* tag (1) + length (1) + content */
+        seq_der = OPENSSL_malloc(seq_der_len);
+        if (seq_der == NULL) {
+            ASN1_OBJECT_free(param_obj);
+            OPENSSL_free(param_der);
+            ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+            return 0;
+        }
+
+        /* Build DER SEQUENCE structure */
+        seq_der[0] = 0x30;              /* SEQUENCE tag (V_ASN1_SEQUENCE) */
+        seq_der[1] = (unsigned char)param_der_len;  /* Length of content */
+        memcpy(seq_der + 2, param_der, param_der_len);  /* OID content */
+
+        /* Create ASN1_STRING to hold the DER-encoded SEQUENCE */
         param_seq = ASN1_STRING_type_new(V_ASN1_SEQUENCE);
         if (param_seq == NULL) {
             ASN1_OBJECT_free(param_obj);
             OPENSSL_free(param_der);
+            OPENSSL_free(seq_der);
             ERR_raise(ERR_LIB_CMS, ERR_R_ASN1_LIB);
             return 0;
         }
 
-        /* Set the DER-encoded OID as the content of the SEQUENCE */
-        if (!ASN1_STRING_set(param_seq, param_der, param_der_len)) {
+        /* Set the complete DER SEQUENCE as the content */
+        if (!ASN1_STRING_set(param_seq, seq_der, seq_der_len)) {
             ASN1_OBJECT_free(param_obj);
             ASN1_STRING_free(param_seq);
             OPENSSL_free(param_der);
+            OPENSSL_free(seq_der);
             ERR_raise(ERR_LIB_CMS, ERR_R_ASN1_LIB);
             return 0;
         }
 
         /* Clean up temporary allocations */
+        OPENSSL_free(seq_der);
         OPENSSL_free(param_der);
         ASN1_OBJECT_free(param_obj);
-        param_obj = NULL; /* Prevent double-free */
+        param_obj = NULL;
 
         /*
          * Set keyEncryptionAlgorithm to kexp15 with the wrapped parameter.
